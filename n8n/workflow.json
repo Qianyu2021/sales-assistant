@@ -1,0 +1,471 @@
+{
+  "name": "EliseAI Lead Enrichment Pipeline v4",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-intake",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node_webhook",
+      "name": "Webhook — Form & Email",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [{ "mode": "everyMinute" }]
+        },
+        "filters": {
+          "labelIds": ["leads"]
+        },
+        "options": {
+          "dataPropertyAttachmentsPrefixName": "attachment_"
+        }
+      },
+      "id": "node_gmail",
+      "name": "Gmail Trigger — leads label",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1,
+      "position": [260, 120],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_YOUR_GMAIL_CREDENTIAL_ID",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "documentId": "REPLACE_WITH_YOUR_GOOGLE_SHEET_ID",
+        "sheetName": "Leads",
+        "event": "rowAdded",
+        "options": {}
+      },
+      "id": "node_sheets",
+      "name": "Google Sheets Trigger — new lead row",
+      "type": "n8n-nodes-base.googleSheetsTrigger",
+      "typeVersion": 1,
+      "position": [260, 480],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_SHEETS_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const msg = $input.first().json;\nconst body = msg.textPlain || msg.textHtml || msg.text || msg.snippet || '';\nreturn [{\n  json: {\n    input_type: 'email',\n    source: 'gmail',\n    _trigger: 'gmail',\n    _needs_webhook_response: false,\n    raw_input: [\n      'From: ' + (msg.from || ''),\n      'Subject: ' + (msg.subject || ''),\n      'Body:',\n      body\n    ].join('\\n')\n  }\n}];"
+      },
+      "id": "node_normalize_gmail",
+      "name": "Normalize Gmail input",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [460, 120]
+    },
+    {
+      "parameters": {
+        "functionCode": "const payload = $input.first().json;\nconst body = payload.body || payload;\n\nif (body.input_type === 'name_card') {\n  return [{\n    json: {\n      ...body,\n      source: body.source || 'card_scan',\n      _trigger: 'webhook',\n      _needs_webhook_response: true\n    }\n  }];\n}\n\nconst rawInput = body.raw_input || [\n  body.company ? 'Company: ' + body.company : null,\n  body.address ? 'Property address: ' + body.address : null,\n  body.city ? 'City: ' + body.city : null,\n  body.state ? 'State: ' + body.state : null,\n  body.email ? 'Email: ' + body.email : null,\n  body.firstName || body.lastName ? 'Contact: ' + [body.firstName, body.lastName].filter(Boolean).join(' ') : null\n].filter(Boolean).join('\\n');\n\nreturn [{\n  json: {\n    ...body,\n    input_type: body.input_type || 'manual',\n    source: body.source || 'manual',\n    raw_input: rawInput,\n    _trigger: 'webhook',\n    _needs_webhook_response: true\n  }\n}];"
+      },
+      "id": "node_normalize_webhook",
+      "name": "Normalize Webhook input",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const row = $input.first().json;\nconst firstName = row.firstName || row['First Name'] || row.firstname || '';\nconst lastName = row.lastName || row['Last Name'] || row.lastname || '';\nconst company = row.company || row['Company'] || row['Company Name'] || '';\nconst address = row.address || row['Property Address'] || row['Address'] || '';\nconst city = row.city || row['City'] || '';\nconst state = row.state || row['State'] || '';\nconst email = row.email || row['Email'] || row['Email Address'] || '';\n\nreturn [{\n  json: {\n    firstName,\n    lastName,\n    company,\n    address,\n    city,\n    state,\n    email,\n    input_type: 'sheet_submission',\n    source: 'sheet',\n    _trigger: 'google_sheets',\n    _needs_webhook_response: false,\n    raw_input: [\n      company ? 'Company: ' + company : null,\n      address ? 'Property address: ' + address : null,\n      city ? 'City: ' + city : null,\n      state ? 'State: ' + state : null,\n      email ? 'Email: ' + email : null,\n      firstName || lastName ? 'Contact: ' + [firstName, lastName].filter(Boolean).join(' ') : null\n    ].filter(Boolean).join('\\n')\n  }\n}];"
+      },
+      "id": "node_normalize_sheets",
+      "name": "Normalize Sheets input",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [460, 480]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "rules": [
+            {
+              "value1": "={{ $json.input_type }}",
+              "operation": "equal",
+              "value2": "name_card"
+            }
+          ]
+        },
+        "fallbackOutput": "extra"
+      },
+      "id": "node_switch",
+      "name": "Card or text?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [860, 210]
+    },
+    {
+      "parameters": {
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "key", "value": "={{ $credentials.httpQueryAuth.value }}" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={\n  \"contents\": [{\n    \"parts\": [\n      {\n        \"inline_data\": {\n          \"mime_type\": \"{{ $json.image_mime_type || 'image/jpeg' }}\",\n          \"data\": \"{{ $json.image_base64 }}\"\n        }\n      },\n      {\n        \"text\": \"This is a scanned business card image. Extract all visible information and return ONLY valid JSON with no markdown fences or explanation.\\n\\nFields to extract:\\n- company_name\\n- address (street address)\\n- city\\n- state (2-letter code or null)\\n- zip\\n- contact_name (full name on card)\\n- email\\n- phone (digits only, prefer mobile if multiple)\\n- job_title (person title if shown, else null)\\n- unit_count (null — not usually on cards)\\n- notes (website, tagline, or any other sales-relevant detail visible on card, else null)\\n\\nReturn null for any field not visible. Do not invent data.\"\n      }\n    ]\n  }],\n  \"generationConfig\": { \"temperature\": 0, \"maxOutputTokens\": 512 }\n}",
+        "options": {}
+      },
+      "id": "node_gemini_card",
+      "name": "Gemini — read name card image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1060, 120],
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "REPLACE_WITH_YOUR_GEMINI_CREDENTIAL_ID",
+          "name": "Gemini API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "key", "value": "={{ $credentials.httpQueryAuth.value }}" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={\n  \"contents\": [{\n    \"parts\": [{\n      \"text\": \"You are a lead extraction and qualification assistant for a real estate sales tool. The input may be a typed form entry, a pasted email, or any mix.\\n\\nReturn ONLY valid JSON with no markdown fences or explanation. Fields:\\n- is_potential_customer (boolean)\\n- qualification_reason (short string explaining why this is or is not a likely customer inquiry)\\n- company_name (property or company name)\\n- address (street address of the property only, else null)\\n- city\\n- state (2-letter code)\\n- zip\\n- contact_name\\n- email\\n- phone (digits only, no formatting)\\n- unit_count (integer number of apartment units if mentioned, else null)\\n- notes (pain points, current software, timeline, or any detail useful to a sales rep — else null)\\n\\nPotential customer guidance:\\n- true if this looks like someone asking about EliseAI, leasing automation, property operations tooling, pricing, demo requests, integrations, or related buying interest\\n- false for recruiting emails, vendor outreach, newsletters, spam, internal mail, support unrelated to buying, or anything clearly not a sales lead\\n\\nInput:\\n{{ $json.raw_input }}\\n\\nRules:\\n- Return null for any field you cannot find\\n- Do not invent or guess data\\n- If multiple phones exist prefer mobile\\n- If this is not a likely customer inquiry set is_potential_customer to false\"\n    }]\n  }],\n  \"generationConfig\": { \"temperature\": 0, \"maxOutputTokens\": 768 }\n}",
+        "options": {}
+      },
+      "id": "node_gemini_text",
+      "name": "Gemini — extract text input",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1060, 300],
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "REPLACE_WITH_YOUR_GEMINI_CREDENTIAL_ID",
+          "name": "Gemini API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const source = $input.first().json;\nconst raw = source.candidates?.[0]?.content?.parts?.[0]?.text || '{}';\nconst cleaned = raw.replace(/```json|```/gi, '').trim();\ntry {\n  const parsed = JSON.parse(cleaned);\n  return [{ json: { ...parsed, _source: source.source || 'name_card', _input_type: 'name_card' } }];\n} catch(e) {\n  return [{ json: { _parse_error: true, _raw: raw, _source: 'name_card', _input_type: 'name_card' } }];\n}"
+      },
+      "id": "node_parse_card",
+      "name": "Parse — card response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1260, 120]
+    },
+    {
+      "parameters": {
+        "functionCode": "const source = $input.first().json;\nconst raw = source.candidates?.[0]?.content?.parts?.[0]?.text || '{}';\nconst cleaned = raw.replace(/```json|```/gi, '').trim();\ntry {\n  const parsed = JSON.parse(cleaned);\n  return [{ json: { ...parsed, _source: source.source || source.input_type || 'text', _input_type: source.input_type || 'text' } }];\n} catch(e) {\n  return [{ json: { _parse_error: true, _raw: raw, _source: 'text', _input_type: 'text' } }];\n}"
+      },
+      "id": "node_parse_text",
+      "name": "Parse — text response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1260, 300]
+    },
+    {
+      "parameters": {
+        "mode": "passThrough",
+        "output": "input1"
+      },
+      "id": "node_merge2",
+      "name": "Merge parsed results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [1460, 210]
+    },
+    {
+      "parameters": {
+        "functionCode": "const lead = $input.first().json;\nconst isEmail = lead._source === 'gmail' || lead._input_type === 'email';\nconst shouldEnrich = isEmail\n  ? lead.is_potential_customer !== false && !!(lead.email || lead.contact_name || lead.company_name)\n  : !!(lead.company_name && lead.address);\n\nconst validationError = shouldEnrich\n  ? null\n  : isEmail\n    ? (lead.qualification_reason || 'Inbound email does not appear to be a likely customer inquiry.')\n    : 'Gemini could not extract company_name and/or address from the input. Please provide more detail.';\n\nreturn [{\n  json: {\n    ...lead,\n    _should_enrich: shouldEnrich,\n    _validation_error: validationError\n  }\n}];"
+      },
+      "id": "node_validate",
+      "name": "Validate required fields",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1660, 210]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json._should_enrich }}",
+              "operation": "true"
+            }
+          ]
+        }
+      },
+      "id": "node_should_enrich",
+      "name": "Should enrich lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1860, 210]
+    },
+    {
+      "parameters": {
+        "responseBody": "={ \"error\": \"lead_not_qualified\", \"detail\": \"{{ $json._validation_error || 'Lead did not meet the qualification rules.' }}\", \"input_type\": \"{{ $json._input_type }}\" }",
+        "responseCode": 422,
+        "options": {
+          "responseHeaders": {
+            "entries": [{ "name": "Content-Type", "value": "application/json" }]
+          }
+        }
+      },
+      "id": "node_error_response",
+      "name": "Respond — missing fields",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2060, 340]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json._needs_webhook_response }}",
+              "operation": "true"
+            }
+          ]
+        }
+      },
+      "id": "node_if_error_webhook",
+      "name": "Need webhook error response?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1860, 340]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8787/api/leads/enrich",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  firstName: $json.contact_name ? $json.contact_name.split(' ')[0] : null,\n  lastName: $json.contact_name ? $json.contact_name.split(' ').slice(1).join(' ') : null,\n  email: $json.email || null,\n  company: $json.company_name || $json.company || null,\n  address: $json.address || null,\n  city: $json.city || null,\n  state: $json.state || null,\n  source: $json._source || 'manual'\n} }}",
+        "options": {}
+      },
+      "id": "node_backend_enrich",
+      "name": "Backend — enrich lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2060, 210]
+    },
+    {
+      "parameters": {
+        "url": "https://nominatim.openstreetmap.org/search",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "q",              "value": "={{ $json.address + ', ' + ($json.city || '') + ', ' + ($json.state || '') }}" },
+            { "name": "format",         "value": "json" },
+            { "name": "limit",          "value": "1" },
+            { "name": "addressdetails", "value": "1" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "User-Agent", "value": "EliseAI-LeadTool/1.0 (hello@eliseai.com)" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_nominatim",
+      "name": "Geocode — Nominatim",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1860, 120]
+    },
+    {
+      "parameters": {
+        "url": "https://maps.googleapis.com/maps/api/place/findplacefromtext/json",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "input",     "value": "={{ $json.company_name + ' ' + $json.address + ' ' + ($json.city || '') }}" },
+            { "name": "inputtype", "value": "textquery" },
+            { "name": "fields",    "value": "name,rating,user_ratings_total,formatted_address,place_id,opening_hours" },
+            { "name": "key",       "value": "REPLACE_WITH_YOUR_GOOGLE_API_KEY" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_places",
+      "name": "Google Places",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1860, 210]
+    },
+    {
+      "parameters": {
+        "url": "https://api.opencorporates.com/v0.4/companies/search",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "q",                 "value": "={{ $json.company_name }}" },
+            { "name": "jurisdiction_code", "value": "={{ 'us_' + ($json.state || '').toLowerCase() }}" },
+            { "name": "api_token",         "value": "REPLACE_WITH_YOUR_OPENCORPORATES_TOKEN" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_opencorp",
+      "name": "OpenCorporates",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1860, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Pull results from all three parallel API calls\nconst lead    = $items('Validate required fields')[0].json;\nconst osmArr  = $items('Geocode — Nominatim')[0].json;\nconst osm     = Array.isArray(osmArr) ? (osmArr[0] || {}) : (osmArr || {});\nconst placesR = $items('Google Places')[0].json;\nconst place   = placesR.candidates?.[0] || {};\nconst corpR   = $items('OpenCorporates')[0].json;\nconst corp    = corpR.results?.companies?.[0]?.company || {};\n\n// ── Scoring weights (must sum to 1.0) ──────────────────────────────────\nconst W = {\n  google_rating:    0.25,   // how well-regarded the property is\n  review_volume:    0.20,   // proxy for active leasing activity\n  address_verified: 0.20,   // data quality signal\n  contact_quality:  0.20,   // can we actually reach this person?\n  company_maturity: 0.15    // established operator = better buyer\n};\n\nfunction scale(val, max) {\n  return Math.min(5, Math.round((val / max) * 5));\n}\n\nconst currentYear = new Date().getFullYear();\nconst incYear = corp.incorporation_date\n  ? parseInt(corp.incorporation_date.split('-')[0])\n  : null;\n\nconst F = {\n  google_rating:    place.rating ? Math.round(place.rating) : 0,\n  review_volume:    scale(place.user_ratings_total || 0, 200),\n  address_verified: osm.lat ? 5 : 0,\n  contact_quality:  (lead.email && lead.phone) ? 5 : lead.email ? 3 : 1,\n  company_maturity: incYear ? scale(currentYear - incYear, 10) : 2\n};\n\nconst total = parseFloat(\n  Object.keys(W).reduce((s, k) => s + W[k] * F[k], 0).toFixed(2)\n);\n\n// ── Insight strings shown to the rep ──────────────────────────────────\nconst insights = [];\nif (!place.rating)\n  insights.push('No Google listing found — low digital presence, worth verifying');\nif (place.rating && place.rating >= 4.2)\n  insights.push('Strong Google rating (' + place.rating + ') — likely stable, well-run operator');\nif (place.rating && place.rating < 3.5)\n  insights.push('Low Google rating (' + place.rating + ') — may have tenant issues; qualify carefully');\nif ((place.user_ratings_total || 0) >= 100)\n  insights.push('High review volume (' + place.user_ratings_total + ') — active leasing property');\nif (!osm.lat)\n  insights.push('Address could not be verified on OpenStreetMap — confirm with rep before outreach');\nif (lead.unit_count && parseInt(lead.unit_count) >= 50)\n  insights.push('Portfolio of ' + lead.unit_count + ' units — strong automation ROI case');\nif (lead.notes)\n  insights.push('Rep note: ' + lead.notes);\nif (corp.company_number)\n  insights.push('Registered company found: ' + (corp.name || lead.company_name) + (incYear ? ' (est. ' + incYear + ')' : ''));\n\n// ── Priority tier ─────────────────────────────────────────────────────\nconst tier = total >= 4 ? 'hot' : total >= 2.5 ? 'warm' : 'cold';\n\nreturn [{ json: {\n  lead_id:      'lead_' + Math.random().toString(36).substr(2, 8),\n  status:       'enriched',\n  processed_at: new Date().toISOString(),\n  input_type:   lead._input_type || 'unknown',\n  source:       lead._source    || 'unknown',\n\n  company_name: lead.company_name,\n  address:      lead.address,\n  city:         lead.city   || osm.address?.city   || null,\n  state:        lead.state  || osm.address?.state  || null,\n  zip:          lead.zip    || osm.address?.postcode || null,\n\n  contact: {\n    name:      lead.contact_name || null,\n    email:     lead.email        || null,\n    phone:     lead.phone        || null,\n    job_title: lead.job_title    || null\n  },\n\n  unit_count: lead.unit_count || null,\n  notes:      lead.notes      || null,\n\n  enrichment: {\n    google_name:     place.name             || null,\n    google_rating:   place.rating           || null,\n    review_count:    place.user_ratings_total || null,\n    place_id:        place.place_id         || null,\n    address_verified: !!osm.lat,\n    lat:             osm.lat  || null,\n    lon:             osm.lon  || null,\n    corp_name:       corp.name              || null,\n    corp_number:     corp.company_number    || null,\n    incorporated:    incYear                || null\n  },\n\n  score: {\n    total:    total,\n    tier:     tier,\n    factors:  F,\n    weights:  W,\n    insights: insights\n  }\n}}];"
+      },
+      "id": "node_scoring",
+      "name": "Scoring Engine",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [2060, 210]
+    },
+    {
+      "parameters": {
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "responseCode": 200,
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              { "name": "Content-Type", "value": "application/json" }
+            ]
+          }
+        }
+      },
+      "id": "node_respond",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2260, 210]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json._needs_webhook_response }}",
+              "operation": "true"
+            }
+          ]
+        }
+      },
+      "id": "node_if_success_webhook",
+      "name": "Need webhook success response?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [2260, 210]
+    }
+  ],
+
+  "connections": {
+    "Gmail Trigger — leads label": {
+      "main": [[{ "node": "Normalize Gmail input", "type": "main", "index": 0 }]]
+    },
+    "Normalize Gmail input": {
+      "main": [[{ "node": "Card or text?", "type": "main", "index": 0 }]]
+    },
+    "Google Sheets Trigger — new lead row": {
+      "main": [[{ "node": "Normalize Sheets input", "type": "main", "index": 0 }]]
+    },
+    "Normalize Sheets input": {
+      "main": [[{ "node": "Card or text?", "type": "main", "index": 0 }]]
+    },
+    "Webhook — Form & Email": {
+      "main": [[{ "node": "Normalize Webhook input", "type": "main", "index": 0 }]]
+    },
+    "Normalize Webhook input": {
+      "main": [[{ "node": "Card or text?", "type": "main", "index": 0 }]]
+    },
+    "Card or text?": {
+      "main": [
+        [{ "node": "Gemini — read name card image", "type": "main", "index": 0 }],
+        [{ "node": "Gemini — extract text input",   "type": "main", "index": 0 }]
+      ]
+    },
+    "Gemini — read name card image": {
+      "main": [[{ "node": "Parse — card response", "type": "main", "index": 0 }]]
+    },
+    "Parse — card response": {
+      "main": [[{ "node": "Merge parsed results", "type": "main", "index": 0 }]]
+    },
+    "Gemini — extract text input": {
+      "main": [[{ "node": "Parse — text response", "type": "main", "index": 0 }]]
+    },
+    "Parse — text response": {
+      "main": [[{ "node": "Merge parsed results", "type": "main", "index": 1 }]]
+    },
+    "Merge parsed results": {
+      "main": [[{ "node": "Validate required fields", "type": "main", "index": 0 }]]
+    },
+    "Validate required fields": {
+      "main": [
+        [{ "node": "Should enrich lead?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Should enrich lead?": {
+      "main": [
+        [{ "node": "Backend — enrich lead", "type": "main", "index": 0 }],
+        [{ "node": "Need webhook error response?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Need webhook error response?": {
+      "main": [
+        [{ "node": "Respond — missing fields", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Backend — enrich lead": {
+      "main": [[{ "node": "Need webhook success response?", "type": "main", "index": 0 }]]
+    },
+    "Need webhook success response?": {
+      "main": [
+        [{ "node": "Respond to Webhook", "type": "main", "index": 0 }],
+        []
+      ]
+    }
+  }
+}
